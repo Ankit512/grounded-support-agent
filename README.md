@@ -1,9 +1,5 @@
 # Grounded Support Agent
 
-<!-- The line below is the MCP Registry PyPI ownership marker (must ship in the
-     PyPI long-description). Keep it identical to `name` in server.json. -->
-mcp-name: io.github.Ankit512/grounded-support-agent
-
 **A customer-support agent that resolves what it can prove and honestly escalates the rest.**
 
 [![CI](https://github.com/Ankit512/grounded-support-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Ankit512/grounded-support-agent/actions/workflows/ci.yml)
@@ -209,3 +205,7 @@ whose worst failure is a cited passage, not an invented one — so you can safel
 as the citations support.
 
 MIT licensed.
+
+<!-- The line below is the MCP Registry PyPI ownership marker (must ship in the
+     PyPI long-description). Keep it identical to `name` in server.json. -->
+mcp-name: io.github.Ankit512/grounded-support-agent
