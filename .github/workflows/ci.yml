@@ -1,0 +1,43 @@
+# Honesty gate CI.
+#
+# The core, the eval harness, and the tests are Python standard-library only, so
+# this workflow deliberately has NO `pip install` step: the build is
+# dependency-free and deterministic. The eval is the gate — `eval/run_eval.py`
+# exits non-zero on ANY hallucination (an out-of-scope/injection question that
+# resolved, an ungrounded resolve, or a resolve with the wrong citation), which
+# turns the build RED. The unit tests assert the same invariants directly.
+#
+# The optional MCP `mcp` SDK is intentionally NOT installed here — it is only
+# needed to speak MCP over stdio, not to run the eval or the tests.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  honesty-gate:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.11', '3.13']
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # No dependencies to install — core, eval, and tests are stdlib only.
+      - name: Honesty-under-ignorance eval (non-zero exit on any hallucination)
+        run: python3 eval/run_eval.py
+
+      - name: Unit tests (invariants + entailment guard)
+        run: python3 tests/test_agent.py

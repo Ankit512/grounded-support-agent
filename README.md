@@ -6,6 +6,8 @@ mcp-name: io.github.Ankit512/grounded-support-agent
 
 **A customer-support agent that resolves what it can prove and honestly escalates the rest.**
 
+[![CI](https://github.com/Ankit512/grounded-support-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Ankit512/grounded-support-agent/actions/workflows/ci.yml)
+
 AI support agents are strong on common questions and dangerous on the edges: asked something
 the knowledge base does not cover, most will still produce a fluent, confident, wrong answer.
 In support, a confident wrong answer is worse than no answer, it erodes trust and creates a
