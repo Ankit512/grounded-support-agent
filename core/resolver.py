@@ -1,189 +1,118 @@
-"""resolver.py — the resolve-or-escalate decision engine.
+"""The decision engine: resolve what the knowledge base can prove, escalate the rest.
 
-This module, not a model, decides whether the agent is allowed to answer. The
-decision is a function of two deterministic signals from the retriever:
+The principle, carried over from the itsoc log tool: the model never owns the verdict.
+Here the *verdict* is whether we are allowed to answer at all. That call is made by
+deterministic retrieval and coverage, not by a language model, so the agent cannot talk
+itself into a confident wrong answer. A model may later phrase a RESOLVED answer, but only
+from passages that already cleared the bar; it is never asked to decide, only to word.
 
-  * ``coverage`` — the fraction of the customer's distinct content words that
-    actually appear in the top passage. This is the honesty gate: if the words
-    they asked about are not in the passage, we have not covered their question
-    and we do not get to claim we did.
-  * ``score``    — the BM25 relevance of the top passage. A floor on it separates
-    "partly relevant, escalate for a human" from "nothing here, no match".
-
-The thresholds are explicit constants below and travel in every provenance
-block, so any decision can be re-derived and audited by hand. There is no prompt
-asking a model to be careful.
-
-Outcomes (exactly three):
-  RESOLVE                  coverage >= RESOLVE_COVERAGE and score >= RESOLVE_SCORE
-  ESCALATE low_confidence  some relevance (score >= RELEVANCE_FLOOR) but the bar
-                           was not cleared
-  ESCALATE no_match        not even relevant
-
-Guarantees this enforces (and their honest limits):
-  * No RESOLVE without a citation — a resolve always names its source passage.
-  * An out-of-scope question (its content words are absent from every passage)
-    cannot clear the coverage gate, so it can never RESOLVE. This is the tested
-    invariant.
-  * These guarantee the agent cannot give an *ungrounded* answer and cannot
-    *resolve an out-of-scope* question. They do NOT claim it can never be wrong:
-    a passage that is cited but mis-ranked could still ground a cited-but-wrong
-    resolve. Grounding is guaranteed; perfect ranking is not.
+Three outcomes, and only three:
+  RESOLVE   the KB covers the question well enough to answer, with citations
+  ESCALATE  the KB is partially relevant but not strong enough to answer safely
+  ESCALATE  the KB does not cover this at all -> honest handoff, no guessing
 """
+from __future__ import annotations
+from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
+import hashlib
+import json
 
-from .retriever import Retriever
+from .retriever import BM25, Passage, tokenize, load_passages, kb_fingerprint
 
-# --- thresholds (explicit and auditable) ----------------------------------
-# Raising RESOLVE_COVERAGE makes the agent stricter (more escalation, safer);
-# lowering it resolves more but risks thin grounding. It is set as high as the
-# KB's citations support, because the honesty guarantee is what lets us push it
-# up without risking a confident wrong answer.
-RESOLVE_COVERAGE = 0.5     # >= half the customer's content words in the passage
-RESOLVE_SCORE = 1.0        # BM25 floor for a resolve
-RELEVANCE_FLOOR = 0.4      # below this the KB simply does not cover the question
-
-# Outcome constants
-RESOLVE = "RESOLVE"
-ESCALATE = "ESCALATE"
-
-# Escalation reasons
-LOW_CONFIDENCE = "low_confidence"
-NO_MATCH = "no_match"
-EMPTY_QUESTION = "empty_question"
+# Thresholds are explicit and auditable, not hidden inside a prompt.
+RESOLVE_COVERAGE = 0.60     # fraction of the question's content terms the top passage must cover
+RESOLVE_MIN_SCORE = 1.0     # minimum absolute BM25 score, guards against spurious weak matches
+WEAK_COVERAGE = 0.30        # below this, treat as "not covered" rather than "low confidence"
 
 
-def thresholds():
-    """The threshold set, as a plain dict for provenance."""
-    return {
-        "resolve_coverage": RESOLVE_COVERAGE,
-        "resolve_score": RESOLVE_SCORE,
-        "relevance_floor": RELEVANCE_FLOOR,
-    }
+@dataclass
+class Citation:
+    passage_id: str
+    doc: str
+    heading: str
+    score: float
 
 
-def _snippet(text, limit=280):
-    text = " ".join(text.split())
-    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+@dataclass
+class Decision:
+    outcome: str                 # "resolved" | "escalated"
+    reason: str                  # machine reason code
+    confidence: float            # 0..1, term coverage of the winning passage
+    answer: str | None           # grounded answer text, or None when escalated
+    citations: list[Citation]
+    handoff_note: str | None     # context handed to the human when escalated
+    provenance: dict
+
+
+def _coverage(query: str, passage: Passage) -> float:
+    q = set(tokenize(query))
+    if not q:
+        return 0.0
+    have = set(passage.tokens)
+    return len(q & have) / len(q)
 
 
 class Resolver:
-    """Wraps a :class:`Retriever` and turns a question into a decision.
+    def __init__(self, kb_dir: str):
+        self.passages = load_passages(kb_dir)
+        self.bm25 = BM25(self.passages)
+        self.kb_hash = kb_fingerprint(self.passages)
 
-    The resolver holds no state beyond the retriever, so the same question over
-    the same KB always yields the same decision — the property the eval checks.
-    """
-
-    def __init__(self, retriever):
-        self.retriever = retriever
-
-    @classmethod
-    def from_kb(cls, kb_dir):
-        return cls(Retriever(kb_dir))
-
-    def _provenance(self, top):
-        prov = self.retriever.provenance()
-        prov["thresholds"] = thresholds()
-        if top is not None:
-            prov["score"] = top["bm25"]
-            prov["coverage"] = top["coverage"]
-            prov["matched_terms"] = top["matched"]
-            prov["missing_terms"] = top["missing"]
-        else:
-            prov["score"] = 0.0
-            prov["coverage"] = 0.0
-            prov["matched_terms"] = []
-            prov["missing_terms"] = []
-        return prov
-
-    def resolve_or_escalate(self, question, k=3):
-        """Return a decision dict for ``question``.
-
-        Shape (stable — the CLI, eval and MCP layer all read it):
-
-            {
-              "question": str,
-              "outcome": "RESOLVE" | "ESCALATE",
-              "reason": None | "low_confidence" | "no_match" | "empty_question",
-              "confidence": int,          # 0-100, = coverage of the top passage
-              "answer": str | None,       # only on RESOLVE, verbatim cited text
-              "citation": {...} | None,   # only on RESOLVE
-              "evidence": [ {...}, ... ], # ranked passages (for a human)
-              "provenance": {...}         # KB hash, retriever, thresholds, score…
-            }
-        """
-        question = (question or "").strip()
-        ranked = self.retriever.search(question, k=k) if question else []
-        top = ranked[0] if ranked else None
-
-        evidence = [{
-            "passage_id": r["passage"].id,
-            "topic": r["passage"].topic,
-            "heading": r["passage"].heading,
-            "score": r["bm25"],
-            "coverage": r["coverage"],
-            "matched_terms": r["matched"],
-            "snippet": _snippet(r["passage"].text),
-        } for r in ranked]
-
-        base = {
-            "question": question,
-            "evidence": evidence,
-            "provenance": self._provenance(top),
+    def resolve(self, question: str, top_k: int = 3) -> Decision:
+        hits = self.bm25.search(question, top_k=top_k)
+        cites = [Citation(p.passage_id, p.doc, p.heading, round(s, 3)) for p, s in hits]
+        prov = {
+            "asked_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "kb_sha256_16": self.kb_hash,
+            "retriever": "bm25",
+            "thresholds": {
+                "resolve_coverage": RESOLVE_COVERAGE,
+                "resolve_min_score": RESOLVE_MIN_SCORE,
+                "weak_coverage": WEAK_COVERAGE,
+            },
+            "question_sha256_16": hashlib.sha256(question.encode()).hexdigest()[:16],
         }
 
-        # --- empty question -----------------------------------------------
-        if not question or top is None:
-            base.update({
-                "outcome": ESCALATE,
-                "reason": EMPTY_QUESTION,
-                "confidence": 0,
-                "answer": None,
-                "citation": None,
-                "handoff": "No question to answer. Escalating to a human.",
-            })
-            return base
+        # Nothing retrieved at all -> honest "not covered".
+        if not hits:
+            return Decision(
+                outcome="escalated", reason="no_match", confidence=0.0, answer=None,
+                citations=[], provenance=prov,
+                handoff_note="No knowledge-base passage matched this question. "
+                             "Routing to a human; do not answer from the model alone.",
+            )
 
-        score = top["bm25"]
-        coverage = top["coverage"]
-        confidence = int(round(coverage * 100))
+        top_p, top_s = hits[0]
+        cov = _coverage(question, top_p)
+        prov["top_score"] = round(top_s, 3)
+        prov["top_coverage"] = round(cov, 3)
 
-        # --- RESOLVE ------------------------------------------------------
-        if coverage >= RESOLVE_COVERAGE and score >= RESOLVE_SCORE:
-            passage = top["passage"]
-            base.update({
-                "outcome": RESOLVE,
-                "reason": None,
-                "confidence": confidence,
-                # The answer is the cited passage text, verbatim. The model (if
-                # any) may only reword this; it may not add to it.
-                "answer": passage.text,
-                "citation": {
-                    "passage_id": passage.id,
-                    "topic": passage.topic,
-                    "heading": passage.heading,
-                    "kb_sha256": self.retriever.fingerprint,
-                },
-            })
-            return base
+        # Strong coverage AND a real score -> we are allowed to answer, with the source.
+        if cov >= RESOLVE_COVERAGE and top_s >= RESOLVE_MIN_SCORE:
+            return Decision(
+                outcome="resolved", reason="grounded", confidence=round(cov, 3),
+                answer=top_p.text, citations=cites, handoff_note=None, provenance=prov,
+            )
 
-        # --- ESCALATE -----------------------------------------------------
-        if score >= RELEVANCE_FLOOR:
-            reason = LOW_CONFIDENCE
-            handoff = (
-                "The knowledge base is partly relevant but does not clearly "
-                "cover this. Handing off to a human with the closest passages "
-                "attached.")
-        else:
-            reason = NO_MATCH
-            handoff = (
-                "The knowledge base does not cover this question. Handing off "
-                "to a human; the agent is not permitted to answer.")
-        base.update({
-            "outcome": ESCALATE,
-            "reason": reason,
-            "confidence": confidence,
-            "answer": None,
-            "citation": None,
-            "handoff": handoff,
-        })
-        return base
+        # Some relevance but not enough to be safe -> escalate with context, never guess.
+        if cov >= WEAK_COVERAGE:
+            return Decision(
+                outcome="escalated", reason="low_confidence", confidence=round(cov, 3),
+                answer=None, citations=cites, provenance=prov,
+                handoff_note=f"Partial match (coverage {cov:.0%}) below the resolve bar. "
+                             f"Closest source: {top_p.passage_id}. Handing to a human with "
+                             f"the top passages attached rather than risk a wrong answer.",
+            )
+
+        # Retrieved noise, not real coverage -> treat as not covered.
+        return Decision(
+            outcome="escalated", reason="insufficient_coverage", confidence=round(cov, 3),
+            answer=None, citations=cites, provenance=prov,
+            handoff_note="The knowledge base does not meaningfully cover this question. "
+                         "Routing to a human; the model is not permitted to answer.",
+        )
+
+
+def decision_to_json(d: Decision) -> str:
+    out = asdict(d)
+    return json.dumps(out, indent=2)

@@ -1,90 +1,45 @@
 #!/usr/bin/env python3
-"""ask.py — ask the Grounded Support Agent a question from the command line.
+"""Ask the grounded support agent a question.
 
     python3 ask.py "how do I reset my password?"
     python3 ask.py --json "can I get a refund after 30 days?"
 
-Standard library only. No model, no network, no pip install. The decision is
-made by core/resolver.py; this file only formats it.
+Resolves only what the knowledge base can prove, with citations; otherwise hands off
+to a human honestly. No answer is ever produced that is not grounded in a cited passage.
 """
-
-import argparse
-import json
-import os
-import sys
-
+import sys, os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from core.resolver import Resolver, decision_to_json
 
-from core.resolver import Resolver  # noqa: E402
+KB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kb")
 
-KB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kb")
-
-
-def _format_plain(d):
-    lines = []
-    q = d["question"]
-    lines.append('Q: {}'.format(q))
-    prov = d["provenance"]
-    if d["outcome"] == "RESOLVE":
-        cite = d["citation"]
-        lines.append("")
-        lines.append("RESOLVE  (confidence {}%)".format(d["confidence"]))
-        lines.append("")
-        lines.append(d["answer"])
-        lines.append("")
-        lines.append("Source : {} — “{}”".format(cite["topic"], cite["heading"]))
-        lines.append("Cited  : {}".format(cite["passage_id"]))
+def main(argv):
+    as_json = "--json" in argv
+    argv = [a for a in argv if a != "--json"]
+    if not argv:
+        print("usage: python3 ask.py [--json] \"your question\"")
+        return 2
+    question = " ".join(argv)
+    d = Resolver(KB).resolve(question)
+    if as_json:
+        print(decision_to_json(d))
+        return 0
+    print(f"Q: {question}\n")
+    if d.outcome == "resolved":
+        print(f"[RESOLVED  confidence {d.confidence:.0%}]")
+        print(d.answer)
+        srcs = ", ".join(c.passage_id for c in d.citations if c.score > 0)
+        print(f"\nSource: {srcs}")
     else:
-        lines.append("")
-        lines.append("ESCALATE  ({})".format(d["reason"]))
-        lines.append("")
-        lines.append(d.get("handoff", ""))
-        if d["evidence"]:
-            lines.append("")
-            lines.append("Closest passages (for the human, no decision made):")
-            for e in d["evidence"]:
-                lines.append("  - {} — “{}”  (score {}, coverage {:.0%})".format(
-                    e["topic"], e["heading"], e["score"], e["coverage"]))
-    # Provenance travels with every answer.
-    lines.append("")
-    lines.append("Provenance:")
-    lines.append("  KB sha256   : {}".format(prov["kb_sha256"]))
-    lines.append("  retriever   : {} (k1={}, b={}), {} passages".format(
-        prov["retriever"], prov["k1"], prov["b"], prov["kb_passages"]))
-    th = prov["thresholds"]
-    lines.append("  thresholds  : resolve_coverage>={} resolve_score>={} "
-                 "relevance_floor>={}".format(
-                     th["resolve_coverage"], th["resolve_score"],
-                     th["relevance_floor"]))
-    lines.append("  top score   : {}   coverage: {:.0%}".format(
-        prov["score"], prov["coverage"]))
-    return "\n".join(lines)
-
-
-def main(argv=None):
-    parser = argparse.ArgumentParser(
-        description="Ask the Grounded Support Agent (resolve or escalate).")
-    parser.add_argument("question", nargs="?", default="",
-                        help="the customer question")
-    parser.add_argument("--json", action="store_true",
-                        help="emit the full decision as JSON")
-    parser.add_argument("--kb", default=KB_DIR, help="knowledge base directory")
-    args = parser.parse_args(argv)
-
-    if not args.question.strip():
-        parser.error("a question is required, e.g. ask.py \"how do I reset my password?\"")
-
-    resolver = Resolver.from_kb(args.kb)
-    decision = resolver.resolve_or_escalate(args.question)
-
-    if args.json:
-        print(json.dumps(decision, indent=2))
-    else:
-        print(_format_plain(decision))
-
-    # Exit 0 for a resolve, 2 for an escalation — lets a script branch on it.
-    return 0 if decision["outcome"] == "RESOLVE" else 2
-
+        print(f"[ESCALATED  {d.reason}  confidence {d.confidence:.0%}]")
+        print(d.handoff_note)
+        if d.citations and any(c.score > 0 for c in d.citations):
+            near = ", ".join(c.passage_id for c in d.citations if c.score > 0)
+            print(f"\nClosest sources for the human: {near}")
+    print(f"\nprovenance: kb {d.provenance['kb_sha256_16']} "
+          f"| top_score {d.provenance.get('top_score', 0)} "
+          f"| coverage {d.provenance.get('top_coverage', 0)}")
+    return 0
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

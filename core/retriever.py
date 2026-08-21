@@ -1,228 +1,120 @@
-"""retriever.py — deterministic BM25 retrieval over the markdown knowledge base,
-plus a fingerprint of the exact KB that produced a result.
+"""Deterministic retrieval over the support knowledge base.
 
-Standard library only. There is no embedding model and no network in the trust
-path: given the same KB and the same query, this returns the same ranking every
-time, and every ranking can be audited by hand. The honest cost of that choice is
-weaker recall on heavy paraphrases (see the retrieval trade-off note in README);
-it biases toward escalation, which is the safe failure for a support agent.
-
-A "passage" is one section of a KB file (delimited by markdown headings). A
-RESOLVE cites a passage by its stable id (``<file>#<slug>``), so every grounded
-answer names exactly where it came from.
+Standard library only. The retriever, not a model, decides which knowledge-base
+passages are relevant and how strongly. Every downstream decision is traceable to
+these scores, so the answer path can be audited without asking a model to be honest.
 """
-
-import hashlib
+from __future__ import annotations
 import math
 import os
 import re
+import hashlib
+from dataclasses import dataclass, field
 
-# --- tokenization ---------------------------------------------------------
-# Lowercase alphanumeric runs. Kept deliberately simple and inspectable: the
-# whole point is that a human can reproduce the token set by eye.
-_TOKEN_RE = re.compile(r"[a-z0-9]+")
+STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "to", "of", "in", "on",
+    "for", "and", "or", "i", "my", "me", "you", "your", "it", "this", "that", "with",
+    "how", "do", "does", "did", "can", "cant", "cannot", "will", "would", "should",
+    "what", "when", "where", "why", "which", "who", "if", "as", "at", "by", "from",
+    "get", "got", "have", "has", "had", "not", "no", "so", "up", "out", "we", "they",
+    "there", "here", "about", "into", "than", "then", "them",
+}
 
-# A small, fixed stopword list. These carry no topic signal, so counting them in
-# term coverage would let an out-of-scope question borrow credit from filler
-# words. Frozen here (not learned) so the decision stays auditable.
-STOPWORDS = frozenset("""
-a an and are as at be been but by can cant do does doing done for from get gets
-getting had has have how i id im in into is it its me my no not of on or our so t
-that the their them then there these they this to up us was we were what when
-where which who why will with would you your yours
-""".split())
+_TOKEN = re.compile(r"[a-z0-9]+")
 
 
-def _stem(token):
-    """A tiny deterministic suffix trim so 'tickets'/'ticket' and
-    'refunds'/'refund' match. Intentionally crude and rule-based — not a real
-    stemmer — so its behavior is obvious from reading it."""
-    for suffix in ("ing", "ed", "es", "s"):
-        if len(token) > len(suffix) + 2 and token.endswith(suffix):
-            return token[: -len(suffix)]
-    return token
+def tokenize(text: str) -> list[str]:
+    return [t for t in _TOKEN.findall(text.lower()) if t not in STOPWORDS and len(t) > 1]
 
 
-def tokenize(text):
-    """Return the list of content tokens (lowercased, stopwords removed,
-    lightly stemmed). Order preserved; duplicates kept for term frequency."""
-    out = []
-    for raw in _TOKEN_RE.findall(text.lower()):
-        if raw in STOPWORDS or len(raw) < 2:
-            continue
-        out.append(_stem(raw))
-    return out
-
-
-# --- passages -------------------------------------------------------------
-def _slug(heading):
-    return re.sub(r"[^a-z0-9]+", "-", heading.lower()).strip("-") or "section"
-
-
+@dataclass
 class Passage:
-    """One citeable section of the KB."""
-
-    __slots__ = ("id", "topic", "heading", "text", "tokens", "token_set")
-
-    def __init__(self, topic, heading, text):
-        self.topic = topic
-        self.heading = heading
-        self.text = text.strip()
-        self.id = "{}#{}".format(topic, _slug(heading))
-        self.tokens = tokenize(self.text + " " + heading)
-        self.token_set = frozenset(self.tokens)
-
-    def __repr__(self):
-        return "Passage({!r})".format(self.id)
+    doc: str          # source filename, e.g. "refunds.md"
+    heading: str      # nearest markdown heading, e.g. "Refund window"
+    text: str         # the passage body
+    passage_id: str   # stable id "doc#heading-slug"
+    tokens: list[str] = field(default_factory=list)
 
 
-def _split_passages(topic, raw):
-    """Split one markdown file into passages on '## ' headings. Text before the
-    first '## ' (the '# Title' block) is attached to the file as a whole."""
-    passages = []
-    heading = None
-    buf = []
+def _slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
 
-    def flush():
-        if heading is not None and buf:
-            body = "\n".join(buf).strip()
-            if body:
-                passages.append(Passage(topic, heading, body))
 
-    for line in raw.splitlines():
-        if line.startswith("## "):
-            flush()
-            heading = line[3:].strip()
-            buf = []
-        elif line.startswith("# "):
-            continue  # file title; not its own passage
-        else:
-            buf.append(line)
-    flush()
+def load_passages(kb_dir: str) -> list[Passage]:
+    """Split each markdown doc into passages at '## ' section boundaries."""
+    passages: list[Passage] = []
+    for fn in sorted(os.listdir(kb_dir)):
+        if not fn.endswith(".md"):
+            continue
+        raw = open(os.path.join(kb_dir, fn), encoding="utf-8").read()
+        # split on level-2 headings, keep the heading with its body
+        parts = re.split(r"\n(?=##\s)", raw)
+        for part in parts:
+            lines = part.strip().splitlines()
+            if not lines:
+                continue
+            heading = "intro"
+            body_lines = lines
+            if lines[0].startswith("##"):
+                heading = lines[0].lstrip("#").strip()
+                body_lines = lines[1:]
+            elif lines[0].startswith("#"):
+                heading = lines[0].lstrip("#").strip()
+                body_lines = lines[1:]
+            text = " ".join(l.strip() for l in body_lines if l.strip())
+            if not text:
+                continue
+            pid = f"{fn}#{_slug(heading)}"
+            passages.append(Passage(doc=fn, heading=heading, text=text,
+                                    passage_id=pid, tokens=tokenize(heading + " " + text)))
     return passages
 
 
-# --- retriever ------------------------------------------------------------
-class Retriever:
-    """BM25 over the KB passages. Deterministic and self-contained.
+class BM25:
+    """Textbook BM25 over the KB passages. No external dependencies."""
 
-    Parameters ``k1`` and ``b`` are the standard BM25 knobs and are surfaced in
-    provenance so a result can be reproduced exactly.
-    """
-
-    def __init__(self, kb_dir, k1=1.5, b=0.75):
-        self.kb_dir = kb_dir
-        self.k1 = k1
-        self.b = b
-        self.passages = []
-        self._df = {}          # term -> number of passages containing it
-        self._avgdl = 0.0
-        self._fingerprint = None
-        self._load()
-
-    # -- loading & fingerprint --------------------------------------------
-    def _load(self):
-        files = sorted(
-            f for f in os.listdir(self.kb_dir) if f.endswith(".md")
-        )
-        hasher = hashlib.sha256()
-        total_len = 0
-        for name in files:
-            path = os.path.join(self.kb_dir, name)
-            with open(path, "rb") as fh:
-                raw_bytes = fh.read()
-            # Fingerprint over (name, exact bytes) of every KB file, in sorted
-            # order, so the hash pins the precise KB that produced a decision.
-            hasher.update(name.encode("utf-8"))
-            hasher.update(b"\0")
-            hasher.update(raw_bytes)
-            hasher.update(b"\0")
-            topic = name[:-3]
-            for passage in _split_passages(topic, raw_bytes.decode("utf-8")):
-                self.passages.append(passage)
-                total_len += len(passage.tokens)
-                for term in passage.token_set:
-                    self._df[term] = self._df.get(term, 0) + 1
-
-        if not self.passages:
-            raise ValueError("knowledge base is empty: {}".format(self.kb_dir))
-
-        self._avgdl = total_len / len(self.passages)
-        self._fingerprint = hasher.hexdigest()
-
-    @property
-    def fingerprint(self):
-        """sha256 over the exact KB file bytes. Travels in every provenance
-        block so an answer can be tied to the KB that produced it."""
-        return self._fingerprint
-
-    @property
-    def num_passages(self):
-        return len(self.passages)
-
-    # -- scoring -----------------------------------------------------------
-    def _idf(self, term):
-        n = len(self.passages)
-        df = self._df.get(term, 0)
-        # BM25 idf with the standard +0.5 smoothing, floored at 0 so a term in
-        # every passage cannot pull a score negative.
-        return max(0.0, math.log((n - df + 0.5) / (df + 0.5) + 1.0))
-
-    def _bm25(self, query_tokens, passage):
-        dl = len(passage.tokens)
-        if dl == 0:
-            return 0.0
-        tf = {}
-        for t in passage.tokens:
-            tf[t] = tf.get(t, 0) + 1
-        score = 0.0
-        for term in query_tokens:
-            f = tf.get(term, 0)
-            if f == 0:
-                continue
-            idf = self._idf(term)
-            denom = f + self.k1 * (1 - self.b + self.b * dl / self._avgdl)
-            score += idf * (f * (self.k1 + 1)) / denom
-        return score
-
-    def search(self, query, k=3):
-        """Rank passages for ``query``. Returns a list of dicts (highest first):
-
-            {"passage": Passage, "bm25": float, "coverage": float,
-             "matched": [terms], "missing": [terms]}
-
-        ``coverage`` is the fraction of the query's distinct content terms that
-        appear in that passage — the honest "did we actually cover what they
-        asked" signal that the resolver gates on.
-        """
-        q_tokens = tokenize(query)
-        q_distinct = list(dict.fromkeys(q_tokens))  # order-preserving unique
-        ranked = []
-        for passage in self.passages:
-            bm25 = self._bm25(q_tokens, passage)
-            matched = [t for t in q_distinct if t in passage.token_set]
-            missing = [t for t in q_distinct if t not in passage.token_set]
-            coverage = (len(matched) / len(q_distinct)) if q_distinct else 0.0
-            ranked.append({
-                "passage": passage,
-                "bm25": round(bm25, 4),
-                "coverage": round(coverage, 4),
-                "matched": matched,
-                "missing": missing,
-            })
-        # Sort by BM25, then coverage, then id for a fully deterministic order.
-        ranked.sort(key=lambda r: (r["bm25"], r["coverage"], r["passage"].id),
-                    reverse=True)
-        return ranked[:k]
-
-    def provenance(self):
-        """The retriever half of a provenance block (thresholds are added by the
-        resolver, which owns them)."""
-        return {
-            "retriever": "bm25",
-            "k1": self.k1,
-            "b": self.b,
-            "kb_dir": os.path.basename(os.path.normpath(self.kb_dir)),
-            "kb_sha256": self._fingerprint,
-            "kb_passages": len(self.passages),
+    def __init__(self, passages: list[Passage], k1: float = 1.5, b: float = 0.75):
+        self.passages = passages
+        self.k1, self.b = k1, b
+        self.N = len(passages)
+        self.avgdl = sum(len(p.tokens) for p in passages) / max(self.N, 1)
+        self.df: dict[str, int] = {}
+        for p in passages:
+            for term in set(p.tokens):
+                self.df[term] = self.df.get(term, 0) + 1
+        self.idf = {
+            t: math.log(1 + (self.N - n + 0.5) / (n + 0.5)) for t, n in self.df.items()
         }
+
+    def score(self, query_tokens: list[str], p: Passage) -> float:
+        if not p.tokens:
+            return 0.0
+        freq: dict[str, int] = {}
+        for t in p.tokens:
+            freq[t] = freq.get(t, 0) + 1
+        dl = len(p.tokens)
+        s = 0.0
+        for t in query_tokens:
+            if t not in freq:
+                continue
+            idf = self.idf.get(t, 0.0)
+            tf = freq[t]
+            denom = tf + self.k1 * (1 - self.b + self.b * dl / self.avgdl)
+            s += idf * (tf * (self.k1 + 1)) / denom
+        return s
+
+    def search(self, query: str, top_k: int = 3) -> list[tuple[Passage, float]]:
+        q = tokenize(query)
+        scored = [(p, self.score(q, p)) for p in self.passages]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return [(p, s) for p, s in scored[:top_k] if s > 0]
+
+
+def kb_fingerprint(passages: list[Passage]) -> str:
+    """Stable hash of the KB contents, carried in provenance so an answer can be
+    tied to the exact knowledge base that produced it."""
+    h = hashlib.sha256()
+    for p in sorted(passages, key=lambda x: x.passage_id):
+        h.update(p.passage_id.encode())
+        h.update(p.text.encode())
+    return h.hexdigest()[:16]
