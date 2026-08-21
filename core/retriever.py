@@ -118,3 +118,28 @@ def kb_fingerprint(passages: list[Passage]) -> str:
         h.update(p.passage_id.encode())
         h.update(p.text.encode())
     return h.hexdigest()[:16]
+
+
+def default_kb_dir() -> str:
+    """Filesystem path to the bundled knowledge base.
+
+    Resolves the KB whether the code runs from a repo checkout or from a
+    pip/uvx-installed wheel, so `grounded-support-agent` works standalone with no
+    checkout. Order:
+
+      1. The `kb` package shipped in the wheel (via importlib.resources) — this is
+         how an installed copy finds its own KB.
+      2. Fallback to `../kb` relative to this file — the in-repo layout.
+
+    Callers may still pass an explicit directory to Retriever/Resolver (and the
+    env var GSA_KB_DIR overrides at the server layer); this is only the default.
+    """
+    try:
+        from importlib import resources
+        path = os.fspath(resources.files("kb"))
+        if os.path.isdir(path):
+            return path
+    except Exception:
+        pass
+    here = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(os.path.dirname(here), "kb")

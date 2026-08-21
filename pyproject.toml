@@ -1,0 +1,50 @@
+# Packaging for the Grounded Support Agent MCP server.
+#
+# This ships the whole self-contained agent: the decision engine (core/), the MCP
+# wrapper (mcp_server/), and the knowledge base (kb/) all travel in the wheel, so
+# `uvx grounded-support-agent` runs the full tool set with NO repo checkout and NO
+# external backend. The core stays standard-library only; the `mcp` SDK is the one
+# added dependency and it is used only on the stdio-server path (the decision
+# engine, ask.py, the eval and the tests all run with no third-party package).
+
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grounded-support-agent"
+version = "0.1.0"
+description = "Governed customer-support MCP server: resolves only KB-grounded questions with citations, honestly escalates the rest, and never fabricates a resolution. Deterministic verdict + provenance."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "Ankit Kumar" }]
+keywords = ["mcp", "model-context-protocol", "customer-support", "rag", "grounded", "retrieval", "honest-ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Communications",
+]
+
+# The 1.x line ONLY: MCP clients speak the stable 1.x API (FastMCP lives here).
+# mcp 2.0 changed the server API, so pin below it.
+dependencies = ["mcp>=1.0,<2"]
+
+[project.scripts]
+grounded-support-agent = "mcp_server.server:main"
+
+[project.urls]
+Homepage = "https://github.com/Ankit512/grounded-support-agent"
+Documentation = "https://github.com/Ankit512/grounded-support-agent/blob/main/README.md"
+
+# Flat layout: core/, mcp_server/ and kb/ are import packages at the repo root.
+# kb/ is a package purely so its markdown ships in the wheel and is resolvable via
+# importlib.resources when installed (see core.retriever.default_kb_dir).
+[tool.setuptools]
+packages = ["core", "mcp_server", "kb"]
+include-package-data = true
+
+[tool.setuptools.package-data]
+kb = ["*.md"]

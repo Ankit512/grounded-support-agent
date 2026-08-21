@@ -21,10 +21,14 @@ import sys
 import json
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 from core.resolver import Resolver, decision_to_json  # noqa: E402
+from core.retriever import default_kb_dir  # noqa: E402
 
-KB = os.path.join(ROOT, "kb")
+# The KB is resolved so the server works both in-repo and when pip/uvx-installed
+# (default_kb_dir finds the bundled kb/ in the wheel). GSA_KB_DIR overrides it.
+KB = os.environ.get("GSA_KB_DIR") or default_kb_dir()
 _resolver = Resolver(KB)
 
 TOOL_CONTRACT = {
@@ -82,8 +86,19 @@ def _serve_stdio():
     app.run()
 
 
-if __name__ == "__main__":
-    if "--contract" in sys.argv:
+def main(argv=None):
+    """Console-script entry point (`grounded-support-agent`).
+
+    `--contract` prints the tool contract as JSON and exits with NO SDK required;
+    otherwise the server speaks MCP over stdio (needs the `mcp` SDK).
+    """
+    argv = sys.argv[1:] if argv is None else argv
+    if "--contract" in argv:
         print(json.dumps(TOOL_CONTRACT, indent=2))
-    else:
-        _serve_stdio()
+        return 0
+    _serve_stdio()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
