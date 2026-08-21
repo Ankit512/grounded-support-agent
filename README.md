@@ -134,9 +134,20 @@ nothing itself, so it can sit inside a multi-agent system as a component that wi
 fabricate a resolution.
 
 ```bash
-python3 mcp_server/server.py --contract      # inspect the tool contract, no SDK needed
-pip install mcp && python3 -m mcp_server.server   # speak MCP over stdio
+# From a checkout of this repo (works today):
+python3 mcp_server/server.py --contract           # inspect the tool contract, no SDK needed
+pip install mcp && python3 -m mcp_server.server    # speak MCP over stdio
+
+# Standalone, no checkout — once published to PyPI:
+uvx grounded-support-agent --contract              # inspect the contract
+uvx grounded-support-agent                         # speak MCP over stdio (the KB is bundled)
 ```
+
+The package is **publish-ready** — `pyproject.toml` builds a `grounded-support-agent`
+distribution and `server.json` registers it as `io.github.Ankit512/grounded-support-agent`. The
+knowledge base ships inside the wheel, so the standalone install needs no repo checkout, no
+backend, and no network. See [`PUBLISHING.md`](PUBLISHING.md) for the release flow. Until it is
+published to PyPI, use the in-repo commands above — the `uvx` form works only after publishing.
 
 Two tools: `resolve_or_escalate` (the verdict, with citations and provenance) and
 `get_evidence` (the ranked passages, for a human reviewer, with **no decision attached**). Every
@@ -180,6 +191,9 @@ ask.py              CLI: ask a question (plain or --json)
 eval/               labeled, bucketed questions + the honesty-under-ignorance harness
 mcp_server/         MCP tool wrapper (governed, read-only, provenance-carrying)
 tests/              unit tests for the invariants (stdlib unittest)
+pyproject.toml      packaging: console script + bundled kb/ (publishable to PyPI)
+server.json         MCP Registry manifest (io.github.Ankit512/grounded-support-agent)
+PUBLISHING.md       how to publish to PyPI + the official MCP Registry
 ```
 
 Run the tests with `python3 tests/test_agent.py`.
