@@ -13,7 +13,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grounded-support-agent"
-version = "0.1.0"
+version = "0.2.0"
 description = "Governed customer-support MCP server: resolves only KB-grounded questions with citations, honestly escalates the rest, and never fabricates a resolution. Deterministic verdict + provenance."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -29,8 +29,9 @@ classifiers = [
 ]
 
 # The 1.x line ONLY: MCP clients speak the stable 1.x API (FastMCP lives here).
-# mcp 2.0 changed the server API, so pin below it.
-dependencies = ["mcp>=1.0,<2"]
+# mcp 2.0 changed the server API, so pin below it. 1.9+ is the floor because
+# that is where ToolAnnotations (all four hints) is a first-class FastMCP argument.
+dependencies = ["mcp>=1.9,<2"]
 
 [project.scripts]
 grounded-support-agent = "mcp_server.server:main"
@@ -38,6 +39,9 @@ grounded-support-agent = "mcp_server.server:main"
 [project.urls]
 Homepage = "https://github.com/Ankit512/grounded-support-agent"
 Documentation = "https://github.com/Ankit512/grounded-support-agent/blob/main/README.md"
+Repository = "https://github.com/Ankit512/grounded-support-agent"
+Issues = "https://github.com/Ankit512/grounded-support-agent/issues"
+"MCP Registry" = "https://github.com/Ankit512/grounded-support-agent/blob/main/server.json"
 
 # Flat layout: core/, mcp_server/ and kb/ are import packages at the repo root.
 # kb/ is a package purely so its markdown ships in the wheel and is resolvable via
