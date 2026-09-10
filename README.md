@@ -3,6 +3,8 @@
 **A customer-support agent that resolves what it can prove and honestly escalates the rest.**
 
 [![CI](https://github.com/Ankit512/grounded-support-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Ankit512/grounded-support-agent/actions/workflows/ci.yml)
+[![M8ven Live Monitored](https://m8ven.ai/badge/mcp/ankit512-grounded-support-agent-h18sef)](https://m8ven.ai/mcp/ankit512-grounded-support-agent-h18sef)
+[![M8ven Live Monitored](https://m8ven.ai/badge/mcp/ankit512-log-anomaly-detector-r25j8g)](https://m8ven.ai/mcp/ankit512-log-anomaly-detector-r25j8g)
 
 AI support agents are strong on common questions and dangerous on the edges: asked something
 the knowledge base does not cover, most will still produce a fluent, confident, wrong answer.
