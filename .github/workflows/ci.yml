@@ -7,8 +7,9 @@
 # resolved, an ungrounded resolve, or a resolve with the wrong citation), which
 # turns the build RED. The unit tests assert the same invariants directly.
 #
-# The optional MCP `mcp` SDK is intentionally NOT installed here — it is only
-# needed to speak MCP over stdio, not to run the eval or the tests.
+# The honesty-gate job does not install the optional `mcp` SDK (core, eval, and
+# handler tests are stdlib). The mcp-contract job installs it and asserts that
+# tools/list carries all four boolean hints on every tool.
 
 name: CI
 
@@ -17,6 +18,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   honesty-gate:
@@ -36,8 +38,28 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       # No dependencies to install — core, eval, and tests are stdlib only.
+      # MCP SDK tests in tests/test_mcp_tools.py skip (do not fail) without `mcp`.
       - name: Honesty-under-ignorance eval (non-zero exit on any hallucination)
         run: python3 eval/run_eval.py
 
-      - name: Unit tests (invariants + entailment guard)
-        run: python3 tests/test_agent.py
+      - name: Unit tests (invariants, entailment guard, MCP tool contract)
+        run: python3 -m unittest discover -s tests -v
+
+  # Separate path: prove tools/list actually carries all four boolean hints.
+  # Needs the `mcp` SDK; kept off the honesty-gate so that job stays stdlib-only.
+  mcp-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install MCP SDK
+        run: pip install "mcp>=1.9,<2"
+
+      - name: MCP tools/list annotations + named tool handlers
+        run: python3 -m unittest tests.test_mcp_tools -v

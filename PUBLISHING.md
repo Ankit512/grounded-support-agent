@@ -19,15 +19,18 @@ person with the PyPI token and the GitHub OAuth login.
   matches the `name` in `server.json` **and** the `mcp-name:` marker in the PyPI
   README). **DEFAULT — the human may rename before publishing.**
 - **PyPI package:** `grounded-support-agent`
-- **Version:** `0.1.0` (matches across `pyproject.toml` and `server.json`; must also
+- **Version:** `0.2.0` (matches across `pyproject.toml` and `server.json`; must also
   match the PyPI upload on every release).
 - **One-line description:** Governed customer-support MCP server: resolves only
   KB-grounded questions with citations, honestly escalates the rest, never
   fabricates a resolution.
 - **Homepage:** https://github.com/Ankit512/grounded-support-agent
 - **License:** MIT (holder: Ankit Kumar) · **Transport:** stdio
-- **Tools (read-only):** `resolve_or_escalate` (the verdict, with citations +
-  provenance), `get_evidence` (ranked passages for a human, no decision).
+- **Tools (read-only, all four hints explicit):** `list_topics` (understand
+  coverage), `get_evidence` (ranked passages with text, no decision),
+  `resolve_or_escalate` (the verdict, with citations + provenance). Each tool
+  declares `readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`,
+  `openWorldHint: false`.
 
 ## Self-contained by design (verified)
 
@@ -50,7 +53,7 @@ built `dist/*` METADATA/PKG-INFO), and a GitHub OAuth login.
    package). From the repo root, with the maintainer's PyPI token:
 
    ```sh
-   python -m build                 # -> dist/grounded_support_agent-0.1.0-{whl,tar.gz}
+   python -m build                 # -> dist/grounded_support_agent-0.2.0-{whl,tar.gz}
    twine upload dist/*             # human's PyPI token
    ```
 
@@ -121,25 +124,20 @@ different knowledge base directory.
 
 Boxes are checked ONLY where the step was actually run and its result observed.
 
-- [x] `python -m build` from the repo root succeeds → `dist/grounded_support_agent-0.1.0-{whl,tar.gz}`.
-- [x] `twine check dist/*` → **PASSED** (both wheel and sdist).
-- [x] `mcp-name:` marker present in the **built** long-description — confirmed in
-      the wheel `METADATA` and the sdist `PKG-INFO` (`io.github.Ankit512/grounded-support-agent`).
+- [ ] `python -m build` from the repo root succeeds → `dist/grounded_support_agent-0.2.0-{whl,tar.gz}`.
+- [ ] `twine check dist/*` for the 0.2.0 artifacts.
+- [x] `mcp-name:` marker still in [`README.md`](README.md) (`io.github.Ankit512/grounded-support-agent`).
 - [x] `kb/*.md` (all six topics) + `core/` + `mcp_server/` ship in the wheel;
       console-script entry point `grounded-support-agent = mcp_server.server:main`.
-- [x] Versions match: `pyproject.toml` (`0.1.0`) == `server.json` (`0.1.0`).
-- [x] **Clean out-of-repo venv, VERIFIED (actually run):** installed the wheel into
-      a fresh venv and ran `grounded-support-agent --contract` from a neutral cwd
-      (outside the repo); imported `mcp_server.server` and confirmed
-      `resolve_or_escalate` resolves the **bundled** KB (`default_kb_dir()` →
-      `site-packages/kb`, KB sha256 `685cf885f3272012`, identical to the in-repo
-      build), out-of-scope escalates, and `get_evidence` attaches no decision.
-      A second `--no-deps` venv (mcp SDK absent) confirmed `--contract` still works
-      (exit 0) and the stdio path fails closed with an honest "SDK not installed"
-      message.
-- [x] In-repo unaffected: `python3 eval/run_eval.py` → RESULT: PASS, 0 hallucinations,
-      exit 0; `python3 tests/test_agent.py` → OK; `python3 mcp_server/server.py --contract`
-      works with the SDK absent.
+- [x] Versions match: `pyproject.toml` (`0.2.0`) == `server.json` (`0.2.0`).
+- [ ] **Clean out-of-repo venv for 0.2.0:** install the wheel into a fresh venv,
+      run `grounded-support-agent --contract`, confirm `list_topics` /
+      `get_evidence` / `resolve_or_escalate` all appear with the four boolean
+      hints, and that `--contract` still works with the SDK absent.
+- [x] In-repo: `python3 eval/run_eval.py` → RESULT: PASS, 0 hallucinations;
+      `python3 -m unittest discover -s tests -v` → OK (named tests for
+      `list_topics`, `get_evidence`, `resolve_or_escalate`, including FastMCP
+      `tools/list` annotations when the SDK is installed).
 - [ ] **HUMAN:** confirm the PyPI/registry name (`grounded-support-agent` /
       `io.github.Ankit512/grounded-support-agent`) and the LICENSE holder
       ("Ankit Kumar"), or change them, before publishing.

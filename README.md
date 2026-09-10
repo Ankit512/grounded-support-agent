@@ -147,9 +147,31 @@ knowledge base ships inside the wheel, so the standalone install needs no repo c
 backend, and no network. See [`PUBLISHING.md`](PUBLISHING.md) for the release flow. Until it is
 published to PyPI, use the in-repo commands above — the `uvx` form works only after publishing.
 
-Two tools: `resolve_or_escalate` (the verdict, with citations and provenance) and
-`get_evidence` (the ranked passages, for a human reviewer, with **no decision attached**). Every
-response carries a provenance block tying the answer to the exact KB that produced it.
+Three tools, each with all four MCP hints set to explicit booleans
+(`readOnlyHint: true`, `destructiveHint: false`, `idempotentHint: true`,
+`openWorldHint: false`) so hosts can auto-approve them and OpenAI's directory
+will accept the contract:
+
+| Path | Tool | What it does |
+| --- | --- | --- |
+| **Understand** | `list_topics` | lists every KB document and heading this server can ground |
+| **Understand** | `get_evidence` | ranked passages **with text**, no resolve/escalate decision |
+| **Resolve** | `resolve_or_escalate` | the verdict, with citations and provenance |
+
+KB documents are also exposed as the read-only resource `kb://document/{doc}`
+(for example `kb://document/password.md`). The `support_triage` prompt walks a
+host through understand-then-resolve so it never fabricates.
+
+Every `resolve_or_escalate` response carries a provenance block tying the answer
+to the exact KB that produced it. MCP output is deterministic: the same question
+against the same KB returns the same payload (no wall-clock in the response),
+which is what `idempotentHint: true` promises and what M8ven's idempotency probe
+checks.
+
+**Test** the tools by name with `python3 -m unittest tests.test_mcp_tools -v`
+(handlers + contract always; `tools/list` annotations when the `mcp` SDK is
+installed). **Publish** is human-gated — see [`PUBLISHING.md`](PUBLISHING.md)
+and [`SECURITY.md`](SECURITY.md).
 
 ---
 
@@ -188,13 +210,14 @@ core/rephrase.py    the entailment guard for the optional rephrase layer (stdlib
 ask.py              CLI: ask a question (plain or --json)
 eval/               labeled, bucketed questions + the honesty-under-ignorance harness
 mcp_server/         MCP tool wrapper (governed, read-only, provenance-carrying)
-tests/              unit tests for the invariants (stdlib unittest)
+tests/              invariants (`test_agent.py`) + named MCP tool tests (`test_mcp_tools.py`)
 pyproject.toml      packaging: console script + bundled kb/ (publishable to PyPI)
 server.json         MCP Registry manifest (io.github.Ankit512/grounded-support-agent)
 PUBLISHING.md       how to publish to PyPI + the official MCP Registry
+SECURITY.md         threat model: closed-world, read-only, no credentials
 ```
 
-Run the tests with `python3 tests/test_agent.py`.
+Run the tests with `python3 -m unittest discover -s tests -v`.
 
 ## Why this exists
 
